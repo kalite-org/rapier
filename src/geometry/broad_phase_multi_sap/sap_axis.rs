@@ -245,7 +245,12 @@ impl SAPAxis {
             if endpoint_i.is_start() {
                 while endpoint_i.value < self.endpoints[j - 1].value {
                     let endpoint_j = self.endpoints[j - 1];
+                    if endpoint_j.proxy() == endpoint_j.proxy() {
+                        continue;
+                    }
+
                     self.endpoints[j] = endpoint_j;
+
 
                     if endpoint_j.is_end() {
                         // Report start collision.
@@ -261,6 +266,9 @@ impl SAPAxis {
             } else {
                 while endpoint_i.value < self.endpoints[j - 1].value {
                     let endpoint_j = self.endpoints[j - 1];
+                    if endpoint_j.proxy() == endpoint_j.proxy() {
+                        continue;
+                    }
                     self.endpoints[j] = endpoint_j;
 
                     if endpoint_j.is_start() {
