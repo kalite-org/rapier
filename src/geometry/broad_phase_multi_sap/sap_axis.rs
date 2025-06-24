@@ -246,6 +246,7 @@ impl SAPAxis {
                 while endpoint_i.value < self.endpoints[j - 1].value {
                     let endpoint_j = self.endpoints[j - 1];
                     if endpoint_j.proxy() == endpoint_j.proxy() {
+                        j -= 1;
                         continue;
                     }
 
@@ -267,6 +268,7 @@ impl SAPAxis {
                 while endpoint_i.value < self.endpoints[j - 1].value {
                     let endpoint_j = self.endpoints[j - 1];
                     if endpoint_j.proxy() == endpoint_j.proxy() {
+                        j -= 1;
                         continue;
                     }
                     self.endpoints[j] = endpoint_j;
