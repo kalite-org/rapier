@@ -25,7 +25,6 @@ pub extern crate parry3d as parry;
 #[cfg(all(feature = "dim3", feature = "f64"))]
 pub extern crate parry3d_f64 as parry;
 
-pub extern crate crossbeam;
 pub extern crate nalgebra as na;
 #[cfg(feature = "serde-serialize")]
 #[macro_use]
@@ -40,7 +39,9 @@ pub use rayon;
     not(feature = "simd-stable"),
     not(feature = "simd-nightly")
 ))]
-std::compile_error!("The `simd-is-enabled` feature should not be enabled explicitly. Please enable the `simd-stable` or the `simd-nightly` feature instead.");
+std::compile_error!(
+    "The `simd-is-enabled` feature should not be enabled explicitly. Please enable the `simd-stable` or the `simd-nightly` feature instead."
+);
 #[cfg(all(feature = "simd-is-enabled", feature = "enhanced-determinism"))]
 std::compile_error!(
     "SIMD cannot be enabled when the `enhanced-determinism` feature is also enabled."
@@ -216,6 +217,6 @@ pub mod prelude {
     pub use crate::geometry::*;
     pub use crate::math::*;
     pub use crate::pipeline::*;
-    pub use na::{point, vector, DMatrix, DVector};
+    pub use na::{DMatrix, DVector, point, vector};
     pub extern crate nalgebra;
 }

@@ -53,6 +53,10 @@ impl ColliderSet {
         std::mem::take(&mut self.modified_colliders)
     }
 
+    pub(crate) fn set_modified(&mut self, modified: ModifiedColliders) {
+        self.modified_colliders = modified;
+    }
+
     pub(crate) fn take_removed(&mut self) -> Vec<ColliderHandle> {
         std::mem::take(&mut self.removed_colliders)
     }
@@ -297,6 +301,29 @@ impl ColliderSet {
         let result = self.colliders.get_mut(handle.0)?;
         self.modified_colliders.push_once(handle, result);
         Some(result)
+    }
+
+    /// Gets a mutable reference to the two colliders with the given handles.
+    ///
+    /// If `handle1 == handle2`, only the first returned value will be `Some`.
+    #[cfg(not(feature = "dev-remove-slow-accessors"))]
+    pub fn get_pair_mut(
+        &mut self,
+        handle1: ColliderHandle,
+        handle2: ColliderHandle,
+    ) -> (Option<&mut Collider>, Option<&mut Collider>) {
+        if handle1 == handle2 {
+            (self.get_mut(handle1), None)
+        } else {
+            let (mut co1, mut co2) = self.colliders.get2_mut(handle1.0, handle2.0);
+            if let Some(co1) = co1.as_deref_mut() {
+                self.modified_colliders.push_once(handle1, co1);
+            }
+            if let Some(co2) = co2.as_deref_mut() {
+                self.modified_colliders.push_once(handle2, co2);
+            }
+            (co1, co2)
+        }
     }
 
     pub(crate) fn index_mut_internal(&mut self, handle: ColliderHandle) -> &mut Collider {

@@ -10,11 +10,11 @@ use crate::dynamics::{
     RigidBodyChanges, RigidBodyPosition, RigidBodyType,
 };
 use crate::geometry::{
-    BroadPhase, BroadPhasePairEvent, ColliderChanges, ColliderHandle, ColliderPair,
+    BroadPhaseBvh, BroadPhasePairEvent, ColliderChanges, ColliderHandle, ColliderPair,
     ContactManifoldIndex, ModifiedColliders, NarrowPhase, TemporaryInteractionIndex,
 };
 use crate::math::{Real, Vector};
-use crate::pipeline::{EventHandler, PhysicsHooks, QueryPipeline};
+use crate::pipeline::{EventHandler, PhysicsHooks};
 use crate::prelude::ModifiedRigidBodies;
 use {crate::dynamics::RigidBodySet, crate::geometry::ColliderSet};
 
@@ -71,11 +71,14 @@ impl PhysicsPipeline {
         colliders: &mut ColliderSet,
         modified_colliders: &mut ModifiedColliders,
     ) {
-        for handle in modified_colliders.iter() {
-            if let Some(co) = colliders.get_mut_internal(*handle) {
-                co.changes = ColliderChanges::empty();
-            }
+        for co in colliders.colliders.iter_mut() {
+            co.1.changes = ColliderChanges::empty();
         }
+        // for handle in modified_colliders.iter() {
+        //     if let Some(co) = colliders.get_mut_internal(*handle) {
+        //         co.changes = ColliderChanges::empty();
+        //     }
+        // }
 
         modified_colliders.clear();
     }
@@ -98,7 +101,7 @@ impl PhysicsPipeline {
         &mut self,
         integration_parameters: &IntegrationParameters,
         islands: &mut IslandManager,
-        broad_phase: &mut dyn BroadPhase,
+        broad_phase: &mut BroadPhaseBvh,
         narrow_phase: &mut NarrowPhase,
         bodies: &mut RigidBodySet,
         colliders: &mut ColliderSet,
@@ -117,8 +120,7 @@ impl PhysicsPipeline {
         self.broad_phase_events.clear();
         self.broadphase_collider_pairs.clear();
         broad_phase.update(
-            integration_parameters.dt,
-            integration_parameters.prediction_distance(),
+            integration_parameters,
             colliders,
             bodies,
             modified_colliders,
@@ -154,11 +156,10 @@ impl PhysicsPipeline {
             colliders,
             impulse_joints,
             multibody_joints,
-            modified_colliders,
             hooks,
             events,
         );
-        narrow_phase.compute_intersections(bodies, colliders, modified_colliders, hooks, events);
+        narrow_phase.compute_intersections(bodies, colliders, hooks, events);
 
         self.counters.cd.narrow_phase_time.pause();
         self.counters.stages.collision_detection_time.pause();
@@ -341,6 +342,7 @@ impl PhysicsPipeline {
         islands: &IslandManager,
         bodies: &mut RigidBodySet,
         colliders: &mut ColliderSet,
+        broad_phase: &mut BroadPhaseBvh,
         narrow_phase: &NarrowPhase,
         ccd_solver: &mut CCDSolver,
         events: &dyn EventHandler,
@@ -348,10 +350,11 @@ impl PhysicsPipeline {
         self.counters.ccd.toi_computation_time.start();
         // Handle CCD
         let impacts = ccd_solver.predict_impacts_at_next_positions(
-            integration_parameters.dt,
+            integration_parameters,
             islands,
             bodies,
             colliders,
+            broad_phase,
             narrow_phase,
             events,
         );
@@ -415,14 +418,13 @@ impl PhysicsPipeline {
         gravity: &Vector<Real>,
         integration_parameters: &IntegrationParameters,
         islands: &mut IslandManager,
-        broad_phase: &mut dyn BroadPhase,
+        broad_phase: &mut BroadPhaseBvh,
         narrow_phase: &mut NarrowPhase,
         bodies: &mut RigidBodySet,
         colliders: &mut ColliderSet,
         impulse_joints: &mut ImpulseJointSet,
         multibody_joints: &mut MultibodyJointSet,
         ccd_solver: &mut CCDSolver,
-        mut query_pipeline: Option<&mut QueryPipeline>,
         hooks: &dyn PhysicsHooks,
         events: &dyn EventHandler,
     ) {
@@ -502,12 +504,6 @@ impl PhysicsPipeline {
             true,
         );
 
-        if let Some(queries) = query_pipeline.as_deref_mut() {
-            self.counters.stages.query_pipeline_time.start();
-            queries.update_incremental(colliders, &modified_colliders, &removed_colliders, false);
-            self.counters.stages.query_pipeline_time.pause();
-        }
-
         self.counters.stages.user_changes.resume();
         self.clear_modified_colliders(colliders, &mut modified_colliders);
         self.clear_modified_bodies(bodies, &mut modified_bodies);
@@ -543,9 +539,11 @@ impl PhysicsPipeline {
                 let first_impact = if ccd_active {
                     ccd_solver.find_first_impact(
                         remaining_time,
+                        &integration_parameters,
                         islands,
                         bodies,
                         colliders,
+                        broad_phase,
                         narrow_phase,
                     )
                 } else {
@@ -613,6 +611,7 @@ impl PhysicsPipeline {
                         islands,
                         bodies,
                         colliders,
+                        broad_phase,
                         narrow_phase,
                         ccd_solver,
                         events,
@@ -624,34 +623,35 @@ impl PhysicsPipeline {
             self.advance_to_final_positions(islands, bodies, colliders, &mut modified_colliders);
             self.counters.stages.update_time.pause();
 
-            self.detect_collisions(
-                &integration_parameters,
-                islands,
-                broad_phase,
-                narrow_phase,
-                bodies,
-                colliders,
-                impulse_joints,
-                multibody_joints,
-                &modified_colliders,
-                &[],
-                hooks,
-                events,
-                false,
-            );
-
-            if let Some(queries) = query_pipeline.as_deref_mut() {
-                self.counters.stages.query_pipeline_time.resume();
-                queries.update_incremental(
+            if remaining_substeps > 0 {
+                self.detect_collisions(
+                    &integration_parameters,
+                    islands,
+                    broad_phase,
+                    narrow_phase,
+                    bodies,
                     colliders,
+                    impulse_joints,
+                    multibody_joints,
                     &modified_colliders,
                     &[],
-                    remaining_substeps == 0,
+                    hooks,
+                    events,
+                    false,
                 );
-                self.counters.stages.query_pipeline_time.pause();
-            }
 
-            self.clear_modified_colliders(colliders, &mut modified_colliders);
+                self.clear_modified_colliders(colliders, &mut modified_colliders);
+            } else {
+                // If we ran the last substep, just update the broad-phase bvh instead
+                // of a full collision-detection step.
+                for handle in modified_colliders.iter() {
+                    let co = &colliders[*handle];
+                    let aabb = co.compute_broad_phase_aabb(&integration_parameters, bodies);
+                    broad_phase.set_aabb(&integration_parameters, *handle, aabb);
+                }
+                modified_colliders.clear();
+                // self.clear_modified_colliders(colliders, &mut modified_colliders);
+            }
         }
 
         // Finally, make sure we update the world mass-properties of the rigid-bodies
@@ -667,6 +667,9 @@ impl PhysicsPipeline {
         }
         self.counters.stages.update_time.pause();
 
+        // Re-insert the modified vector we extracted for the borrow-checker.
+        colliders.set_modified(modified_colliders);
+
         self.counters.step_completed();
     }
 }
@@ -679,7 +682,7 @@ mod test {
         CCDSolver, ImpulseJointSet, IntegrationParameters, IslandManager, RigidBodyBuilder,
         RigidBodySet,
     };
-    use crate::geometry::{BroadPhaseMultiSap, ColliderBuilder, ColliderSet, NarrowPhase};
+    use crate::geometry::{BroadPhaseBvh, ColliderBuilder, ColliderSet, NarrowPhase};
     use crate::math::Vector;
     use crate::pipeline::PhysicsPipeline;
     use crate::prelude::{MultibodyJointSet, RevoluteJointBuilder, RigidBodyType};
@@ -690,7 +693,7 @@ mod test {
         let mut impulse_joints = ImpulseJointSet::new();
         let mut multibody_joints = MultibodyJointSet::new();
         let mut pipeline = PhysicsPipeline::new();
-        let mut bf = BroadPhaseMultiSap::new();
+        let mut bf = BroadPhaseBvh::new();
         let mut nf = NarrowPhase::new();
         let mut bodies = RigidBodySet::new();
         let mut islands = IslandManager::new();
@@ -716,7 +719,6 @@ mod test {
             &mut impulse_joints,
             &mut multibody_joints,
             &mut CCDSolver::new(),
-            None,
             &(),
             &(),
         );
@@ -728,7 +730,7 @@ mod test {
         let mut impulse_joints = ImpulseJointSet::new();
         let mut multibody_joints = MultibodyJointSet::new();
         let mut pipeline = PhysicsPipeline::new();
-        let mut bf = BroadPhaseMultiSap::new();
+        let mut bf = BroadPhaseBvh::new();
         let mut nf = NarrowPhase::new();
         let mut islands = IslandManager::new();
 
@@ -772,7 +774,6 @@ mod test {
             &mut impulse_joints,
             &mut multibody_joints,
             &mut CCDSolver::new(),
-            None,
             &(),
             &(),
         );
@@ -838,7 +839,7 @@ mod test {
         let mut pipeline = PhysicsPipeline::new();
         let gravity = Vector::y() * -9.81;
         let integration_parameters = IntegrationParameters::default();
-        let mut broad_phase = BroadPhaseMultiSap::new();
+        let mut broad_phase = BroadPhaseBvh::new();
         let mut narrow_phase = NarrowPhase::new();
         let mut bodies = RigidBodySet::new();
         let mut colliders = ColliderSet::new();
@@ -875,7 +876,6 @@ mod test {
                 &mut impulse_joints,
                 &mut multibody_joints,
                 &mut ccd,
-                None,
                 &physics_hooks,
                 &event_handler,
             );
@@ -888,7 +888,7 @@ mod test {
         let mut impulse_joints = ImpulseJointSet::new();
         let mut multibody_joints = MultibodyJointSet::new();
         let mut pipeline = PhysicsPipeline::new();
-        let mut bf = BroadPhaseMultiSap::new();
+        let mut bf = BroadPhaseBvh::new();
         let mut nf = NarrowPhase::new();
         let mut islands = IslandManager::new();
 
@@ -913,7 +913,6 @@ mod test {
             &mut impulse_joints,
             &mut multibody_joints,
             &mut CCDSolver::new(),
-            None,
             &(),
             &(),
         );
@@ -936,7 +935,6 @@ mod test {
             &mut impulse_joints,
             &mut multibody_joints,
             &mut CCDSolver::new(),
-            None,
             &(),
             &(),
         );
@@ -957,7 +955,7 @@ mod test {
         let mut impulse_joints = ImpulseJointSet::new();
         let mut multibody_joints = MultibodyJointSet::new();
         let mut pipeline = PhysicsPipeline::new();
-        let mut bf = BroadPhaseMultiSap::new();
+        let mut bf = BroadPhaseBvh::new();
         let mut nf = NarrowPhase::new();
         let mut islands = IslandManager::new();
 
@@ -997,7 +995,6 @@ mod test {
             &mut impulse_joints,
             &mut multibody_joints,
             &mut CCDSolver::new(),
-            None,
             &(),
             &(),
         );
@@ -1041,7 +1038,7 @@ mod test {
         let integration_parameters = IntegrationParameters::default();
         let mut physics_pipeline = PhysicsPipeline::new();
         let mut island_manager = IslandManager::new();
-        let mut broad_phase = BroadPhaseMultiSap::new();
+        let mut broad_phase = BroadPhaseBvh::new();
         let mut narrow_phase = NarrowPhase::new();
         let mut impulse_joint_set = ImpulseJointSet::new();
         let mut multibody_joint_set = MultibodyJointSet::new();
@@ -1060,7 +1057,6 @@ mod test {
             &mut impulse_joint_set,
             &mut multibody_joint_set,
             &mut ccd_solver,
-            None,
             &physics_hooks,
             &event_handler,
         );
@@ -1087,7 +1083,6 @@ mod test {
             &mut impulse_joint_set,
             &mut multibody_joint_set,
             &mut ccd_solver,
-            None,
             &physics_hooks,
             &event_handler,
         );
@@ -1114,7 +1109,6 @@ mod test {
             &mut impulse_joint_set,
             &mut multibody_joint_set,
             &mut ccd_solver,
-            None,
             &physics_hooks,
             &event_handler,
         );

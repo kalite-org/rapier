@@ -1,18 +1,18 @@
-use crate::dynamics::{CoefficientCombineRule, MassProperties, RigidBodyHandle};
+use crate::dynamics::{CoefficientCombineRule, MassProperties, RigidBodyHandle, RigidBodySet};
 #[cfg(feature = "dim3")]
 use crate::geometry::HeightFieldFlags;
 use crate::geometry::{
-    ActiveCollisionTypes, BroadPhaseProxyIndex, ColliderBroadPhaseData, ColliderChanges,
-    ColliderFlags, ColliderMassProps, ColliderMaterial, ColliderParent, ColliderPosition,
-    ColliderShape, ColliderType, InteractionGroups, MeshConverter, MeshConverterError, SharedShape,
+    ActiveCollisionTypes, ColliderChanges, ColliderFlags, ColliderMassProps, ColliderMaterial,
+    ColliderParent, ColliderPosition, ColliderShape, ColliderType, InteractionGroups,
+    MeshConverter, MeshConverterError, SharedShape,
 };
-use crate::math::{AngVector, Isometry, Point, Real, Rotation, Vector, DIM};
+use crate::math::{AngVector, DIM, Isometry, Point, Real, Rotation, Vector};
 use crate::parry::transformation::vhacd::VHACDParameters;
 use crate::pipeline::{ActiveEvents, ActiveHooks};
-use crate::prelude::ColliderEnabled;
+use crate::prelude::{ColliderEnabled, IntegrationParameters};
 use na::Unit;
 use parry::bounding_volume::{Aabb, BoundingVolume};
-use parry::shape::{Shape, TriMeshBuilderError, TriMeshFlags, VoxelPrimitiveGeometry};
+use parry::shape::{Shape, TriMeshBuilderError, TriMeshFlags};
 use parry::transformation::voxelization::FillMode;
 
 #[cfg_attr(feature = "serde-serialize", derive(Serialize, Deserialize))]
@@ -29,7 +29,6 @@ pub struct Collider {
     pub(crate) pos: ColliderPosition,
     pub(crate) material: ColliderMaterial,
     pub(crate) flags: ColliderFlags,
-    pub(crate) bf_data: ColliderBroadPhaseData,
     contact_skin: Real,
     contact_force_event_threshold: Real,
     /// User-defined data associated to this collider.
@@ -38,7 +37,6 @@ pub struct Collider {
 
 impl Collider {
     pub(crate) fn reset_internal_references(&mut self) {
-        self.bf_data.proxy_index = crate::INVALID_U32;
         self.changes = ColliderChanges::all();
     }
 
@@ -52,21 +50,6 @@ impl Collider {
         } else {
             Real::MAX
         }
-    }
-
-    /// An internal index associated to this collider by the broad-phase algorithm.
-    pub fn internal_broad_phase_proxy_index(&self) -> BroadPhaseProxyIndex {
-        self.bf_data.proxy_index
-    }
-
-    /// Sets the internal index associated to this collider by the broad-phase algorithm.
-    ///
-    /// This must **not** be called, unless you are implementing your own custom broad-phase
-    /// that require storing an index in the collider struct.
-    /// Modifying that index outside of a custom broad-phase code will most certainly break
-    /// the physics engine.
-    pub fn set_internal_broad_phase_proxy_index(&mut self, id: BroadPhaseProxyIndex) {
-        self.bf_data.proxy_index = id;
     }
 
     /// The rigid body this collider is attached to.
@@ -107,7 +90,6 @@ impl Collider {
             pos,
             material,
             flags,
-            bf_data: _bf_data, // Internal ids must not be overwritten.
             contact_force_event_threshold,
             user_data,
             contact_skin,
@@ -475,6 +457,40 @@ impl Collider {
         self.shape.compute_swept_aabb(&self.pos, next_position)
     }
 
+    // TODO: we have a lot of different AABB computation functions
+    //       We should group them somehow.
+    /// Computes the collider’s AABB for usage in a broad-phase.
+    ///
+    /// It takes into account soft-ccd, the contact skin, and the contact prediction.
+    pub fn compute_broad_phase_aabb(
+        &self,
+        params: &IntegrationParameters,
+        bodies: &RigidBodySet,
+    ) -> Aabb {
+        // Take soft-ccd into account by growing the aabb.
+        let next_pose = self.parent.and_then(|p| {
+            let parent = bodies.get(p.handle)?;
+            (parent.soft_ccd_prediction() > 0.0).then(|| {
+                parent.predict_position_using_velocity_and_forces_with_max_dist(
+                    params.dt,
+                    parent.soft_ccd_prediction(),
+                ) * p.pos_wrt_parent
+            })
+        });
+
+        let prediction_distance = params.prediction_distance();
+        let mut aabb = self.compute_collision_aabb(prediction_distance / 2.0);
+        if let Some(next_pose) = next_pose {
+            let next_aabb = self
+                .shape
+                .compute_aabb(&next_pose)
+                .loosened(self.contact_skin() + prediction_distance / 2.0);
+            aabb.merge(&next_aabb);
+        }
+
+        aabb
+    }
+
     /// Compute the local-space mass properties of this collider.
     pub fn mass_properties(&self) -> MassProperties {
         self.mprops.mass_properties(&*self.shape)
@@ -580,45 +596,28 @@ impl ColliderBuilder {
     ///
     /// For initializing a voxels shape from points in space, see [`Self::voxels_from_points`].
     /// For initializing a voxels shape from a mesh to voxelize, see [`Self::voxelized_mesh`].
-    pub fn voxels(
-        primitive_geometry: VoxelPrimitiveGeometry,
-        voxel_size: Vector<Real>,
-        voxels: &[Point<i32>],
-    ) -> Self {
-        Self::new(SharedShape::voxels(primitive_geometry, voxel_size, voxels))
+    pub fn voxels(voxel_size: Vector<Real>, voxels: &[Point<i32>]) -> Self {
+        Self::new(SharedShape::voxels(voxel_size, voxels))
     }
 
     /// Initializes a collider made of voxels.
     ///
     /// Each voxel has the size `voxel_size` and contains at least one point from `centers`.
     /// The `primitive_geometry` controls the behavior of collision detection at voxels boundaries.
-    pub fn voxels_from_points(
-        primitive_geometry: VoxelPrimitiveGeometry,
-        voxel_size: Vector<Real>,
-        points: &[Point<Real>],
-    ) -> Self {
-        Self::new(SharedShape::voxels_from_points(
-            primitive_geometry,
-            voxel_size,
-            points,
-        ))
+    pub fn voxels_from_points(voxel_size: Vector<Real>, points: &[Point<Real>]) -> Self {
+        Self::new(SharedShape::voxels_from_points(voxel_size, points))
     }
 
     /// Initializes a voxels obtained from the decomposition of the given trimesh (in 3D)
     /// or polyline (in 2D) into voxelized convex parts.
     pub fn voxelized_mesh(
-        primitive_geometry: VoxelPrimitiveGeometry,
         vertices: &[Point<Real>],
         indices: &[[u32; DIM]],
         voxel_size: Real,
         fill_mode: FillMode,
     ) -> Self {
         Self::new(SharedShape::voxelized_mesh(
-            primitive_geometry,
-            vertices,
-            indices,
-            voxel_size,
-            fill_mode,
+            vertices, indices, voxel_size, fill_mode,
         ))
     }
 
@@ -1096,7 +1095,6 @@ impl ColliderBuilder {
         };
         let changes = ColliderChanges::all();
         let pos = ColliderPosition(self.position);
-        let bf_data = ColliderBroadPhaseData::default();
         let coll_type = if self.is_sensor {
             ColliderType::Sensor
         } else {
@@ -1110,7 +1108,6 @@ impl ColliderBuilder {
             parent: None,
             changes,
             pos,
-            bf_data,
             flags,
             coll_type,
             contact_force_event_threshold: self.contact_force_event_threshold,

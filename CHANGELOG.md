@@ -1,3 +1,62 @@
+## v0.28.0 (08 August 2025)
+
+### Modified
+
+- Update to nalgebra 0.34 and parry 0.23.
+- Only run the broad-phase once at the beginning of the physics step.
+- Don’t rebuild a BVH from scratch for CCD. Instead, reuse the broad-phase bvh with localized changes.
+- The public methods of `IslandSolver` has changed slightly to take the broad-phase as input.
+- Removed the `BroadPhase` trait and use the BVH broad-phase directly instead of a trait-object.
+
+### Added
+
+- Add `Collider::compute_broad_phase_aabb` to compute the AABB to be used by the broad-phase, taking
+  into account its contact skin, prediction, and soft-ccd.
+
+### Fix
+
+- Fix issue where some solver contacts would disappear from the contact graph before the user
+  had a chance to read them.
+
+## v0.27.0 (24 July 2025)
+
+### Modified
+
+- Modified the `QueryPipeline` API to take some geometric elements by-value instead of by-reference to make them
+  easier to use.
+- Modified the character controller to take the query-pipeline by reference instead of by-value.
+
+### Fixed
+
+- Fix crash in the new BVH broad-phase when removing colliders in a particular order.
+
+## v0.27.0-beta.0 (11 July 2025)
+
+### Modified
+
+- Replace the hierarchical SAP broad-phase by a broad-phase based on parry’s new BVH structure.
+- The `QueryPipeline` is now and ephemeral object obtained from the broad-phase with `broad_phase.as_query_pipeline()`.
+  It no longer needs to be updated separately from the broad-phase.
+
+### Fixed
+
+- Fix NaN resulting from non-clamped input to simd_asin in angular motor solver.
+
+## v0.26.1 (23 May 2025)
+
+### Added
+
+- Add `RigidBodySet::get_pair_mut` and `ColliderSet::get_pair_mut` to get two mutable rigid-bodies or colliders
+  simultaneously.
+
+## v0.26.0 (16 May 2025)
+
+### Modified
+
+- Update to parry 0.21.0. This changes the initialization of `Voxels` colliders by removing the primitive geometry
+  argument. This also fixes intersection checks with voxels, and force calculation between voxels and other
+  voxels or compound shapes.
+
 ## v0.25.1 (02 May 2025)
 
 ### Modified
